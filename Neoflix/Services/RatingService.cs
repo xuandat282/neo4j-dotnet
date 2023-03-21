@@ -47,19 +47,47 @@ namespace Neoflix.Services
         /// If the User or Movie cannot be found, a NotFoundException should be thrown
         /// </summary>
         /// <param name="userId">The userId for a user.</param>
-        /// <param name="movieId">The tmdbId for a Movie.</param>
+        /// <param name="tmdbId">The tmdbId for a Movie.</param>
         /// <param name="rating">The rating from 1-5.</param>
         /// <returns>
         /// A task that represents the asynchronous operation.<br/>
         /// The task result contains a movie record with a rating property appended.
         /// </returns>
         // tag::add[]
-        public async Task<Dictionary<string, object>> AddAsync(string userId, string movieId, int rating)
+        public async Task<Dictionary<string, object>> AddAsync(string userId, string tmdbId, int rating)
         {
-            // TODO: Convert the native integer into a Neo4j Integer
-            // TODO: Save the rating in the database
-            // TODO: Return movie details and a rating
-            return await Task.FromResult(Fixtures.Goodfellas);
+            await using var session = _driver.AsyncSession();
+
+            var updatedMovie = await session.ExecuteWriteAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(@"
+            MATCH (u:User {userId: $userId})
+            MATCH (m:Movie {tmdbId: $tmdbId})
+            
+            MERGE (u)-[r:RATED]->(m)
+            SET r.rating = $rating,
+                r.timestamp = timestamp()
+            
+            RETURN m {
+                .*,
+                rating: r.rating
+            } as movie", new
+                {
+                    userId,
+                    tmdbId,
+                    rating
+                });
+
+                if (!await cursor.FetchAsync())
+                    return null;
+
+                return cursor.Current["movie"].As<Dictionary<string, object>>();
+            });
+
+            if (updatedMovie == null)
+                throw new NotFoundException($"Could not create rating for Movie: {tmdbId} for User: {userId}");
+
+            return updatedMovie;
         }
         // end::add[]
     }
