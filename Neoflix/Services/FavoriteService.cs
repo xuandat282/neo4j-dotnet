@@ -38,11 +38,26 @@ namespace Neoflix.Services
         public async Task<Dictionary<string, object>[]> AllAsync(string userId, string sort = "title",
             Ordering order = Ordering.Asc, int limit = 6, int skip = 0)
         {
-            // TODO: Open a new session
-            // TODO: Retrieve a list of movies added to a user's favorites
-            // TODO: Close session
+            await using var session = _driver.AsyncSession();
 
-            return await Task.FromResult(Fixtures.Popular);
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var query = $@"
+                    MATCH (u:User {{userId: $userId}})-[r:HAS_FAVORITE]->(m:Movie)
+                    RETURN m {{
+                        .*,
+                        favorite: true
+                    }} AS movie
+                    ORDER BY m.{sort} {order.ToString("G").ToUpper()}
+                    SKIP $skip
+                    LIMIT $limit";
+
+                var cursor = await tx.RunAsync(query, new { userId, skip, limit });
+                var records = await cursor.ToListAsync();
+                return records
+                    .Select(record => record["movie"].As<Dictionary<string, object>>())
+                    .ToArray();
+            });
         }
         // end::all[]
 
@@ -51,23 +66,46 @@ namespace Neoflix.Services
         /// If either the user or movie cannot be found, a `NotFoundError` should be thrown.
         /// </summary>
         /// <param name="userId">The unique ID for the User node.</param>
-        /// <param name="movieId">The unique tmdbId for the Movie node.</param>
+        /// <param name="tmdbId">The unique tmdbId for the Movie node.</param>
         /// <returns>
         /// A task that represents the asynchronous operation.<br/>
         /// The task result contains The updated movie record with `favorite` set to true.
         /// </returns>
         // tag::add[]
-        public Task<Dictionary<string, object>> AddAsync(string userId, string movieId)
+        public async Task<Dictionary<string, object>> AddAsync(string userId, string tmdbId)
         {
-            // TODO: Open a new Session
-            // TODO: Create HAS_FAVORITE relationship within a Write Transaction
-            // TODO: Close the session
-            // TODO: Return movie details and `favorite` property
-            var data = Fixtures.Goodfellas
-                .Concat(new[] {new KeyValuePair<string, object>("favorite", true)})
-                .ToDictionary(x => x.Key, x => x.Value);
+            await using var session = _driver.AsyncSession();
 
-            return Task.FromResult(data);
+            // Create HAS_FAVORITE relationship within a Write Transaction
+            return await session.ExecuteWriteAsync(async tx =>
+            {
+                // tag::create[]
+                var query = @"
+                    MATCH (u:User {userId: $userId})
+                    MATCH (m:Movie {tmdbId: $tmdbId})
+                    
+                    MERGE (u)-[r:HAS_FAVORITE]->(m)
+                    ON CREATE SET u.createdAt = datetime()
+                    RETURN m {
+                        .*,
+                        favorite: true
+                    } AS movie";
+                var cursor = await tx.RunAsync(query, new { userId, tmdbId });
+                // end::create[]
+
+                // tag::throw[]
+                if (!await cursor.FetchAsync())
+                {
+                    // tag::throw[]
+                    throw new NotFoundException($"Couldn't create a favorite relationship for User {userId} and Movie {tmdbId}");
+                    // end::throw[]
+                }
+                // end::throw[]
+
+                // tag::return[]
+                return cursor.Current["movie"].As<Dictionary<string, object>>();
+                // end::return[]
+            });
         }
         // end::add[]
 
@@ -76,24 +114,35 @@ namespace Neoflix.Services
         /// If either the user or movie cannot be found, a `NotFoundError` should be thrown.
         /// </summary>
         /// <param name="userId">The unique ID for the User node.</param>
-        /// <param name="movieId">The unique tmdbId for the Movie node.</param>
+        /// <param name="tmdbId">The unique tmdbId for the Movie node.</param>
         /// <returns>
         /// A task that represents the asynchronous operation.<br/>
         /// The task result contains The updated movie record with `favorite` set to false.
         /// </returns>
         // tag::remove[]
-        public Task<Dictionary<string, object>> RemoveAsync(string userId, string movieId)
+        public async Task<Dictionary<string, object>> RemoveAsync(string userId, string tmdbId)
         {
-            // TODO: Open a new Session
-            // TODO: Delete the HAS_FAVORITE relationship within a Write Transaction
-            // TODO: Close the session
-            // TODO: Return movie details and `favorite` property
+            await using var session = _driver.AsyncSession();
 
-            var data = Fixtures.Goodfellas
-                .Concat(new[] {new KeyValuePair<string, object>("favorite", true)})
-                .ToDictionary(x => x.Key, x => x.Value);
+            // Delete the HAS_FAVORITE relationship within a Write Transaction
+            return await session.ExecuteWriteAsync(async tx =>
+            {
+                var query = @"
+                    MATCH (u:User {userId: $userId})-[r:HAS_FAVORITE]->(m:Movie {tmdbId: $tmdbId})
+                    DELETE r
+                    RETURN m {
+                      .*,
+                      favorite: false
+                    } AS movie";
+                var cursor = await tx.RunAsync(query, new { userId, tmdbId });
 
-            return Task.FromResult(data);
+                if (!await cursor.FetchAsync())
+                {
+                    throw new NotFoundException($"Couldn't delete a favorite relationship for User {userId} and Movie {tmdbId}");
+                }
+
+                return cursor.Current["movie"].As<Dictionary<string, object>>();
+            });
         }
         // end::remove[]
     }
